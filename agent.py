@@ -11,10 +11,19 @@ import os
 import re
 import threading
 import time
-from collections import defaultdict, deque
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+from core.a2a import A2ABus
+from core.parser_utils import extract_prefixed_json, find_balanced_json_end
+from core.safety import (
+    blocked_by_mode,
+    command_policy_block_reason,
+    safe_resolve_path,
+    validate_write_target,
+)
 
 try:
     import httpx  # pyright: ignore[reportMissingImports]
@@ -329,45 +338,22 @@ for name, spec in TOOLS.items():
     )
 
 
+
 def _blocked_by_mode(tool_name: str) -> Optional[str]:
-    if SAFETY_MODE == "read_only" and tool_name in {"bash", "write_file", "edit_file", "memory_write"}:
-        return f"Blocked by SAFETY_MODE={SAFETY_MODE}"
-    if (REQUIRE_HIGH_RISK_APPROVAL or SAFETY_MODE != "trusted_local") and tool_name in HIGH_RISK_TOOL_SET:
-        return _HIGH_RISK_REASON
-    return None
+    return blocked_by_mode(tool_name, SAFETY_MODE, HIGH_RISK_TOOL_SET, REQUIRE_HIGH_RISK_APPROVAL, _HIGH_RISK_REASON)
 
 
 def _safe_resolve_path(path_value: str) -> Path:
-    p = Path(path_value).expanduser()
-    if not p.is_absolute():
-        p = BASE_DIR / p
-    resolved = p.resolve()
-    if not resolved.is_relative_to(BASE_DIR):
-        raise PermissionError(f"Path outside workspace blocked: {resolved}")
-    return resolved
+    return safe_resolve_path(path_value, BASE_DIR)
 
 
 def _validate_write_target(path: Path) -> Optional[str]:
-    name = path.name.lower()
-    if name in _SENSITIVE_FILENAMES:
-        return f"Refusing to write sensitive file: {name}"
-    if any(part.startswith(".git") for part in path.parts):
-        return "Refusing to write inside .git metadata"
-    return None
+    return validate_write_target(path, _SENSITIVE_FILENAMES)
 
 
 def _command_policy_block_reason(cmd: str) -> Optional[str]:
-    text = (cmd or "").strip()
-    if not text:
-        return "Command is empty"
-    if DESTRUCTIVE_RE.search(text):
-        return "Destructive command pattern detected"
-    lower = text.lower()
-    if any(token in lower for token in ["| iex", "invoke-expression", "downloadstring(", "curl ", "wget "]):
-        return "Dynamic download/execute pattern blocked"
-    if BASH_ALLOWED_PREFIXES and not any(lower.startswith(prefix) for prefix in BASH_ALLOWED_PREFIXES):
-        return f"Command family not allowed by policy: {text.split()[0]}"
-    return None
+    return command_policy_block_reason(cmd, DESTRUCTIVE_RE, BASH_ALLOWED_PREFIXES)
+
 
 
 def _domain_allowed(url: str) -> bool:
@@ -471,20 +457,6 @@ async def browser_extract(url: str) -> str:
         return f"Browser error: {e}"
 
 
-class A2ABus:
-    def __init__(self):
-        self.queues: dict[str, deque] = defaultdict(deque)
-
-    def send(self, to_agent: str, payload: dict):
-        self.queues[to_agent].append(payload)
-
-    def receive(self, agent_name: str) -> Optional[dict]:
-        if self.queues[agent_name]:
-            return self.queues[agent_name].popleft()
-        return None
-
-    def status(self) -> dict:
-        return {k: len(v) for k, v in self.queues.items()}
 
 
 class KnowledgeSync:
@@ -501,12 +473,12 @@ class KnowledgeSync:
             "https://arxiv.org/list/cs.AI/recent",
             "https://openai.com/news/",
         ]
+        self.doc_discovery_cache = {}
         self.external_repo_configs = self._build_external_repo_configs()
         self.external_docs = self._discover_external_docs()
         self.repo_profiles = {}
         self.repo_watermarks = {}
         self.repo_fingerprints = {}
-        self.doc_discovery_cache = {}
         self.sync_running = False
         self.last_error = None
         self.last_duration_sec = 0.0
@@ -802,7 +774,7 @@ class KnowledgeSync:
         except Exception:
             repo_mtime = 0.0
         cache_key = f"{repo_name}:{repo_mtime:.3f}:{repo_cfg.get('limit', 20)}"
-        cached = self.doc_discovery_cache.get(cache_key)
+        cached = getattr(self, "doc_discovery_cache", {}).get(cache_key)
         if cached:
             docs = [Path(p) for p in cached if Path(p).exists()]
             if docs:
@@ -1713,67 +1685,12 @@ class RAGEngine:
 # ═══════════════════════════════════════════════════════════════════════════
 #  MEMORY MANAGER — Three-Layer Memory
 # ═══════════════════════════════════════════════════════════════════════════
-class MemoryManager:
+from core.memory import MemoryManager as _CoreMemoryManager
+
+
+class MemoryManager(_CoreMemoryManager):
     def __init__(self):
-        self.working = []
-        self.episodes_path = EPISODES_DIR
-
-    def add_working(self, role: str, content: str):
-        self.working.append({"role": role, "content": content, "ts": datetime.now(timezone.utc).isoformat()})
-        if len(self.working) > 100:
-            self.working = self.working[-100:]
-
-    def get_working_context(self, max_chars: int = 8000) -> str:
-        recent = self.working[-20:]
-        lines = [f"{m['role']}: {m['content'][:500]}" for m in recent]
-        text = "\n".join(lines)
-        return text[-max_chars:] if len(text) > max_chars else text
-
-    def save_episode(self, task: str, outcome: str, tools_used: list, agent_role: str = "main"):
-        episode = {
-            "id": hashlib.md5(f"{task}{time.time()}".encode()).hexdigest()[:12],
-            "task": task,
-            "outcome": outcome,
-            "tools_used": tools_used,
-            "agent": agent_role,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "message_count": len(self.working),
-        }
-        path = self.episodes_path / f"{episode['id']}.json"
-        path.write_text(json.dumps(episode, ensure_ascii=False, indent=2), "utf-8")
-        self._prune_episodes(max_keep=200)
-        return episode
-
-    def _prune_episodes(self, max_keep: int = 200):
-        files = sorted(self.episodes_path.glob("*.json"), key=lambda p: p.stat().st_mtime)
-        if len(files) <= max_keep:
-            return
-        for f in files[: len(files) - max_keep]:
-            try:
-                f.unlink()
-            except Exception:
-                pass
-
-    def get_relevant_episodes(self, query: str, limit: int = 3) -> list:
-        episodes = []
-        for f in self.episodes_path.glob("*.json"):
-            try:
-                episodes.append(json.loads(f.read_text("utf-8")))
-            except Exception:
-                pass
-        if not episodes:
-            return []
-        query_words = set(query.lower().split())
-        scored = []
-        for ep in episodes:
-            task_words = set(ep.get("task", "").lower().split())
-            overlap = len(query_words & task_words) / max(len(query_words), 1)
-            scored.append((ep, overlap))
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return [ep for ep, s in scored[:limit] if s > 0.1]
-
-    def read_long_term(self) -> str:
-        return MEMORY_FILE.read_text("utf-8") if MEMORY_FILE.exists() else ""
+        super().__init__(episodes_path=EPISODES_DIR, memory_file=MEMORY_FILE)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1870,49 +1787,9 @@ class LearningEngine:
 # ═══════════════════════════════════════════════════════════════════════════
 #  AGENT — Main Agent Class
 # ═══════════════════════════════════════════════════════════════════════════
-def _find_balanced_json_end(text: str, start: int) -> int:
-    depth = 0
-    in_str = False
-    escaped = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_str:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return i
-    return -1
-
-
-def _extract_prefixed_json(text: str, prefix: str):
-    idx = text.find(prefix)
-    if idx < 0:
-        return None, text
-
-    start = text.find("{", idx)
-    if start < 0:
-        return None, text
-
-    end = _find_balanced_json_end(text, start)
-    if end < 0:
-        return None, text
-
-    payload = text[start : end + 1]
-    try:
-        return json.loads(payload), text[:idx].strip()
-    except Exception:
-        return None, text
+# Backward-compatible aliases for the parser utilities (now in core.parser_utils)
+_find_balanced_json_end = find_balanced_json_end
+_extract_prefixed_json = extract_prefixed_json
 
 
 class Agent:
