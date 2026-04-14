@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 from core.parser_utils import extract_prefixed_json
+from core.safety import blocked_by_mode, command_policy_block_reason, safe_resolve_path, validate_write_target
 
 try:
     import httpx  # pyright: ignore[reportMissingImports]
@@ -328,47 +329,6 @@ for name, spec in TOOLS.items():
             },
         }
     )
-
-
-def _blocked_by_mode(tool_name: str) -> Optional[str]:
-    if SAFETY_MODE == "read_only" and tool_name in {"bash", "write_file", "edit_file", "memory_write"}:
-        return f"Blocked by SAFETY_MODE={SAFETY_MODE}"
-    if (REQUIRE_HIGH_RISK_APPROVAL or SAFETY_MODE != "trusted_local") and tool_name in HIGH_RISK_TOOL_SET:
-        return _HIGH_RISK_REASON
-    return None
-
-
-def _safe_resolve_path(path_value: str) -> Path:
-    p = Path(path_value).expanduser()
-    if not p.is_absolute():
-        p = BASE_DIR / p
-    resolved = p.resolve()
-    if not resolved.is_relative_to(BASE_DIR):
-        raise PermissionError(f"Path outside workspace blocked: {resolved}")
-    return resolved
-
-
-def _validate_write_target(path: Path) -> Optional[str]:
-    name = path.name.lower()
-    if name in _SENSITIVE_FILENAMES:
-        return f"Refusing to write sensitive file: {name}"
-    if any(part.startswith(".git") for part in path.parts):
-        return "Refusing to write inside .git metadata"
-    return None
-
-
-def _command_policy_block_reason(cmd: str) -> Optional[str]:
-    text = (cmd or "").strip()
-    if not text:
-        return "Command is empty"
-    if DESTRUCTIVE_RE.search(text):
-        return "Destructive command pattern detected"
-    lower = text.lower()
-    if any(token in lower for token in ["| iex", "invoke-expression", "downloadstring(", "curl ", "wget "]):
-        return "Dynamic download/execute pattern blocked"
-    if BASH_ALLOWED_PREFIXES and not any(lower.startswith(prefix) for prefix in BASH_ALLOWED_PREFIXES):
-        return f"Command family not allowed by policy: {text.split()[0]}"
-    return None
 
 
 def _domain_allowed(url: str) -> bool:
@@ -1127,7 +1087,7 @@ class KnowledgeSync:
 
 async def _tool_bash(args: dict, _agent: "Agent" = None) -> str:
     cmd = args.get("command", "")
-    block_reason = _command_policy_block_reason(cmd)
+    block_reason = command_policy_block_reason(cmd, DESTRUCTIVE_RE, BASH_ALLOWED_PREFIXES)
     if block_reason:
         return f"⚠️ BLOCKED: {block_reason}: `{cmd}`"
     proc = await asyncio.create_subprocess_shell(
@@ -1149,18 +1109,18 @@ async def _tool_bash(args: dict, _agent: "Agent" = None) -> str:
 
 
 def _tool_read_file(args: dict, _agent: "Agent" = None) -> str:
-    p = _safe_resolve_path(args.get("path", ""))
+    p = safe_resolve_path(args.get("path", ""), BASE_DIR)
     if not p.exists():
         return f"❌ Not found: {p}"
     return p.read_text("utf-8", errors="replace")[:8000]
 
 
 def _tool_write_file(args: dict, _agent: "Agent" = None) -> str:
-    p = _safe_resolve_path(args.get("path", ""))
+    p = safe_resolve_path(args.get("path", ""), BASE_DIR)
     content = args.get("content", "")
     if len(content.encode("utf-8")) > MAX_WRITE_FILE_BYTES:
         return f"❌ Content too large ({MAX_WRITE_FILE_BYTES} bytes max)"
-    path_warning = _validate_write_target(p)
+    path_warning = validate_write_target(p, _SENSITIVE_FILENAMES)
     if path_warning:
         return f"⚠️ BLOCKED: {path_warning}"
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -1169,10 +1129,10 @@ def _tool_write_file(args: dict, _agent: "Agent" = None) -> str:
 
 
 def _tool_edit_file(args: dict, _agent: "Agent" = None) -> str:
-    p = _safe_resolve_path(args.get("path", ""))
+    p = safe_resolve_path(args.get("path", ""), BASE_DIR)
     if not p.exists():
         return f"❌ Not found: {p}"
-    path_warning = _validate_write_target(p)
+    path_warning = validate_write_target(p, _SENSITIVE_FILENAMES)
     if path_warning:
         return f"⚠️ BLOCKED: {path_warning}"
     old = args.get("old_text", "")
@@ -1185,7 +1145,7 @@ def _tool_edit_file(args: dict, _agent: "Agent" = None) -> str:
 
 
 def _tool_list_files(args: dict, _agent: "Agent" = None) -> str:
-    p = _safe_resolve_path(args.get("path", "."))
+    p = safe_resolve_path(args.get("path", "."), BASE_DIR)
     if not p.exists():
         return f"❌ Not found: {p}"
     if p.is_file():
@@ -1466,7 +1426,13 @@ TOOL_HANDLERS = {
 
 async def execute_tool(name: str, args: dict, agent: "Agent" = None) -> str:
     try:
-        blocked = _blocked_by_mode(name)
+        blocked = blocked_by_mode(
+            name,
+            SAFETY_MODE,
+            HIGH_RISK_TOOL_SET,
+            REQUIRE_HIGH_RISK_APPROVAL,
+            _HIGH_RISK_REASON,
+        )
         if blocked:
             return f"⚠️ {blocked}"
         handler = TOOL_HANDLERS.get(name)
