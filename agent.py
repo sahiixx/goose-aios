@@ -11,10 +11,11 @@ import os
 import re
 import threading
 import time
-from collections import defaultdict, deque
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from core.a2a import A2ABus
 from core.parser_utils import extract_prefixed_json
 from core.safety import blocked_by_mode, command_policy_block_reason, safe_resolve_path, validate_write_target
 
@@ -430,22 +431,6 @@ async def browser_extract(url: str) -> str:
             return text[:12000]
     except Exception as e:
         return f"Browser error: {e}"
-
-
-class A2ABus:
-    def __init__(self):
-        self.queues: dict[str, deque] = defaultdict(deque)
-
-    def send(self, to_agent: str, payload: dict):
-        self.queues[to_agent].append(payload)
-
-    def receive(self, agent_name: str) -> Optional[dict]:
-        if self.queues[agent_name]:
-            return self.queues[agent_name].popleft()
-        return None
-
-    def status(self) -> dict:
-        return {k: len(v) for k, v in self.queues.items()}
 
 
 class KnowledgeSync:
