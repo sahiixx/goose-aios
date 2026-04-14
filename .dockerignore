@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.external/
+conversations/
+knowledge/
+memory/
+.git/
+.github/
+.vscode/
+*.egg-info/

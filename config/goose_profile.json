@@ -1,0 +1,14 @@
+{
+  "mode": "goose-local",
+  "enable_web_sync": false,
+  "repo_priority": [
+    "goose",
+    "open-saas",
+    "agency-agents"
+  ],
+  "excluded_repos": [],
+  "repo_limits": {
+    "goose": 60,
+    "open-saas": 40
+  }
+}

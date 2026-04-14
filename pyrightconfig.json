@@ -1,0 +1,14 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": [
+    "agent.py",
+    "server.py",
+    "tools"
+  ],
+  "extraPaths": [
+    ".venv/Lib/site-packages"
+  ],
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false
+}

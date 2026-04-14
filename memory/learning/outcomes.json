@@ -1,0 +1,9 @@
+[
+  {
+    "task": "Conversation context:\nuser: Hi\n\nUser request:\nHi",
+    "outcome": "failure",
+    "steps": 0,
+    "duration": 1.2,
+    "ts": "2026-04-11T21:07:31.712357+00:00"
+  }
+]
