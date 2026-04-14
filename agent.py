@@ -11,10 +11,13 @@ import os
 import re
 import threading
 import time
-from collections import defaultdict, deque
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from core.a2a import A2ABus
+from core.parser_utils import extract_prefixed_json
+from core.safety import blocked_by_mode, command_policy_block_reason, safe_resolve_path, validate_write_target
 
 try:
     import httpx  # pyright: ignore[reportMissingImports]
@@ -329,47 +332,6 @@ for name, spec in TOOLS.items():
     )
 
 
-def _blocked_by_mode(tool_name: str) -> Optional[str]:
-    if SAFETY_MODE == "read_only" and tool_name in {"bash", "write_file", "edit_file", "memory_write"}:
-        return f"Blocked by SAFETY_MODE={SAFETY_MODE}"
-    if (REQUIRE_HIGH_RISK_APPROVAL or SAFETY_MODE != "trusted_local") and tool_name in HIGH_RISK_TOOL_SET:
-        return _HIGH_RISK_REASON
-    return None
-
-
-def _safe_resolve_path(path_value: str) -> Path:
-    p = Path(path_value).expanduser()
-    if not p.is_absolute():
-        p = BASE_DIR / p
-    resolved = p.resolve()
-    if not resolved.is_relative_to(BASE_DIR):
-        raise PermissionError(f"Path outside workspace blocked: {resolved}")
-    return resolved
-
-
-def _validate_write_target(path: Path) -> Optional[str]:
-    name = path.name.lower()
-    if name in _SENSITIVE_FILENAMES:
-        return f"Refusing to write sensitive file: {name}"
-    if any(part.startswith(".git") for part in path.parts):
-        return "Refusing to write inside .git metadata"
-    return None
-
-
-def _command_policy_block_reason(cmd: str) -> Optional[str]:
-    text = (cmd or "").strip()
-    if not text:
-        return "Command is empty"
-    if DESTRUCTIVE_RE.search(text):
-        return "Destructive command pattern detected"
-    lower = text.lower()
-    if any(token in lower for token in ["| iex", "invoke-expression", "downloadstring(", "curl ", "wget "]):
-        return "Dynamic download/execute pattern blocked"
-    if BASH_ALLOWED_PREFIXES and not any(lower.startswith(prefix) for prefix in BASH_ALLOWED_PREFIXES):
-        return f"Command family not allowed by policy: {text.split()[0]}"
-    return None
-
-
 def _domain_allowed(url: str) -> bool:
     if not ALLOWED_WEB_DOMAINS:
         return True
@@ -469,22 +431,6 @@ async def browser_extract(url: str) -> str:
             return text[:12000]
     except Exception as e:
         return f"Browser error: {e}"
-
-
-class A2ABus:
-    def __init__(self):
-        self.queues: dict[str, deque] = defaultdict(deque)
-
-    def send(self, to_agent: str, payload: dict):
-        self.queues[to_agent].append(payload)
-
-    def receive(self, agent_name: str) -> Optional[dict]:
-        if self.queues[agent_name]:
-            return self.queues[agent_name].popleft()
-        return None
-
-    def status(self) -> dict:
-        return {k: len(v) for k, v in self.queues.items()}
 
 
 class KnowledgeSync:
@@ -1126,7 +1072,7 @@ class KnowledgeSync:
 
 async def _tool_bash(args: dict, _agent: "Agent" = None) -> str:
     cmd = args.get("command", "")
-    block_reason = _command_policy_block_reason(cmd)
+    block_reason = command_policy_block_reason(cmd, DESTRUCTIVE_RE, BASH_ALLOWED_PREFIXES)
     if block_reason:
         return f"⚠️ BLOCKED: {block_reason}: `{cmd}`"
     proc = await asyncio.create_subprocess_shell(
@@ -1148,18 +1094,18 @@ async def _tool_bash(args: dict, _agent: "Agent" = None) -> str:
 
 
 def _tool_read_file(args: dict, _agent: "Agent" = None) -> str:
-    p = _safe_resolve_path(args.get("path", ""))
+    p = safe_resolve_path(args.get("path", ""), BASE_DIR)
     if not p.exists():
         return f"❌ Not found: {p}"
     return p.read_text("utf-8", errors="replace")[:8000]
 
 
 def _tool_write_file(args: dict, _agent: "Agent" = None) -> str:
-    p = _safe_resolve_path(args.get("path", ""))
+    p = safe_resolve_path(args.get("path", ""), BASE_DIR)
     content = args.get("content", "")
     if len(content.encode("utf-8")) > MAX_WRITE_FILE_BYTES:
         return f"❌ Content too large ({MAX_WRITE_FILE_BYTES} bytes max)"
-    path_warning = _validate_write_target(p)
+    path_warning = validate_write_target(p, _SENSITIVE_FILENAMES)
     if path_warning:
         return f"⚠️ BLOCKED: {path_warning}"
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -1168,10 +1114,10 @@ def _tool_write_file(args: dict, _agent: "Agent" = None) -> str:
 
 
 def _tool_edit_file(args: dict, _agent: "Agent" = None) -> str:
-    p = _safe_resolve_path(args.get("path", ""))
+    p = safe_resolve_path(args.get("path", ""), BASE_DIR)
     if not p.exists():
         return f"❌ Not found: {p}"
-    path_warning = _validate_write_target(p)
+    path_warning = validate_write_target(p, _SENSITIVE_FILENAMES)
     if path_warning:
         return f"⚠️ BLOCKED: {path_warning}"
     old = args.get("old_text", "")
@@ -1184,7 +1130,7 @@ def _tool_edit_file(args: dict, _agent: "Agent" = None) -> str:
 
 
 def _tool_list_files(args: dict, _agent: "Agent" = None) -> str:
-    p = _safe_resolve_path(args.get("path", "."))
+    p = safe_resolve_path(args.get("path", "."), BASE_DIR)
     if not p.exists():
         return f"❌ Not found: {p}"
     if p.is_file():
@@ -1465,7 +1411,13 @@ TOOL_HANDLERS = {
 
 async def execute_tool(name: str, args: dict, agent: "Agent" = None) -> str:
     try:
-        blocked = _blocked_by_mode(name)
+        blocked = blocked_by_mode(
+            name,
+            SAFETY_MODE,
+            HIGH_RISK_TOOL_SET,
+            REQUIRE_HIGH_RISK_APPROVAL,
+            _HIGH_RISK_REASON,
+        )
         if blocked:
             return f"⚠️ {blocked}"
         handler = TOOL_HANDLERS.get(name)
@@ -1870,49 +1822,6 @@ class LearningEngine:
 # ═══════════════════════════════════════════════════════════════════════════
 #  AGENT — Main Agent Class
 # ═══════════════════════════════════════════════════════════════════════════
-def _find_balanced_json_end(text: str, start: int) -> int:
-    depth = 0
-    in_str = False
-    escaped = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_str:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return i
-    return -1
-
-
-def _extract_prefixed_json(text: str, prefix: str):
-    idx = text.find(prefix)
-    if idx < 0:
-        return None, text
-
-    start = text.find("{", idx)
-    if start < 0:
-        return None, text
-
-    end = _find_balanced_json_end(text, start)
-    if end < 0:
-        return None, text
-
-    payload = text[start : end + 1]
-    try:
-        return json.loads(payload), text[:idx].strip()
-    except Exception:
-        return None, text
 
 
 class Agent:
@@ -2279,19 +2188,19 @@ Available specialist agents: {', '.join(AGENT_ROLES.keys())}
         return self._format_swarm_results(task, results)
 
     def _parse_tool_call(self, text: str):
-        obj, remaining = _extract_prefixed_json(text, "TOOL_CALL:")
+        obj, remaining = extract_prefixed_json(text, "TOOL_CALL:")
         if not obj:
             return None, None, text
         return obj.get("tool"), obj.get("args", {}), remaining
 
     def _parse_delegate(self, text: str):
-        obj, remaining = _extract_prefixed_json(text, "DELEGATE:")
+        obj, remaining = extract_prefixed_json(text, "DELEGATE:")
         if not obj:
             return None, None, text
         return obj.get("agent"), obj.get("task", ""), remaining
 
     def _parse_rag(self, text: str):
-        obj, remaining = _extract_prefixed_json(text, "RAG_QUERY:")
+        obj, remaining = extract_prefixed_json(text, "RAG_QUERY:")
         if not obj:
             return None, None, text
         return obj.get("query", ""), obj, remaining
