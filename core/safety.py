@@ -2,7 +2,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-_WINDOWS_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_WINDOWS_ABS_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\[\?\.]\\|\\\\[^\\]+\\)")
 
 
 def blocked_by_mode(

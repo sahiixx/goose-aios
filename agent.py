@@ -774,7 +774,7 @@ class KnowledgeSync:
         except Exception:
             repo_mtime = 0.0
         cache_key = f"{repo_name}:{repo_mtime:.3f}:{repo_cfg.get('limit', 20)}"
-        cached = self.doc_discovery_cache.get(cache_key)
+        cached = getattr(self, "doc_discovery_cache", {}).get(cache_key)
         if cached:
             docs = [Path(p) for p in cached if Path(p).exists()]
             if docs:
