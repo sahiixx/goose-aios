@@ -15,6 +15,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from core.parser_utils import extract_prefixed_json
 
 try:
     import httpx  # pyright: ignore[reportMissingImports]
@@ -1870,49 +1871,6 @@ class LearningEngine:
 # ═══════════════════════════════════════════════════════════════════════════
 #  AGENT — Main Agent Class
 # ═══════════════════════════════════════════════════════════════════════════
-def _find_balanced_json_end(text: str, start: int) -> int:
-    depth = 0
-    in_str = False
-    escaped = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_str:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return i
-    return -1
-
-
-def _extract_prefixed_json(text: str, prefix: str):
-    idx = text.find(prefix)
-    if idx < 0:
-        return None, text
-
-    start = text.find("{", idx)
-    if start < 0:
-        return None, text
-
-    end = _find_balanced_json_end(text, start)
-    if end < 0:
-        return None, text
-
-    payload = text[start : end + 1]
-    try:
-        return json.loads(payload), text[:idx].strip()
-    except Exception:
-        return None, text
 
 
 class Agent:
@@ -2279,19 +2237,19 @@ Available specialist agents: {', '.join(AGENT_ROLES.keys())}
         return self._format_swarm_results(task, results)
 
     def _parse_tool_call(self, text: str):
-        obj, remaining = _extract_prefixed_json(text, "TOOL_CALL:")
+        obj, remaining = extract_prefixed_json(text, "TOOL_CALL:")
         if not obj:
             return None, None, text
         return obj.get("tool"), obj.get("args", {}), remaining
 
     def _parse_delegate(self, text: str):
-        obj, remaining = _extract_prefixed_json(text, "DELEGATE:")
+        obj, remaining = extract_prefixed_json(text, "DELEGATE:")
         if not obj:
             return None, None, text
         return obj.get("agent"), obj.get("task", ""), remaining
 
     def _parse_rag(self, text: str):
-        obj, remaining = _extract_prefixed_json(text, "RAG_QUERY:")
+        obj, remaining = extract_prefixed_json(text, "RAG_QUERY:")
         if not obj:
             return None, None, text
         return obj.get("query", ""), obj, remaining
