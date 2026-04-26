@@ -27,8 +27,11 @@ from core.safety import (
 
 try:
     import httpx  # pyright: ignore[reportMissingImports]
+    _ConnectError = httpx.ConnectError
 except ImportError:
     httpx = None
+    class _ConnectError(Exception):
+        pass
 
 try:
     import numpy as np  # pyright: ignore[reportMissingImports]
@@ -2018,7 +2021,7 @@ Available specialist agents: {', '.join(AGENT_ROLES.keys())}
                 full_response = chunk_text
                 break
 
-            except httpx.ConnectError:
+            except _ConnectError:
                 error = "❌ Cannot connect to Ollama. Make sure it's running."
                 await self._stream_error(error, stream)
                 full_response = error
