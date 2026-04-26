@@ -15,6 +15,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import agent
 
 
+def _run(coro):
+    """Run a coroutine in a fresh event loop (avoids DeprecationWarning)."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
 
 # ── _safe_resolve_path ────────────────────────────────────────────────────
 
@@ -119,7 +127,7 @@ class TestRAGEngine:
         assert results == []
 
     def test_stats(self):
-        self.rag.ingest("Some chunk of text", "test-source")
+        self.rag.ingest("This is a longer chunk of text that should definitely create at least one chunk in the system", "test-source")
         s = self.rag.stats()
         assert s["chunks"] >= 1
         assert s["sources"] >= 1
@@ -262,7 +270,7 @@ class TestBalancedJson:
 
 class TestExecuteTool:
     def test_unknown_tool(self):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             agent.execute_tool("nonexistent_tool", {})
         )
         assert "Unknown tool" in result
@@ -271,7 +279,7 @@ class TestExecuteTool:
         original = agent.SAFETY_MODE
         agent.SAFETY_MODE = "read_only"
         try:
-            result = asyncio.get_event_loop().run_until_complete(
+            result = _run(
                 agent.execute_tool("bash", {"command": "ls"})
             )
             assert "Blocked" in result or "BLOCKED" in result
@@ -286,7 +294,7 @@ class TestRunGooseCli:
 
     def test_goose_not_found(self, monkeypatch):
         monkeypatch.setattr(agent, "GOOSE_EXE", Path("/nonexistent/goose.exe"))
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             agent._run_goose_cli("say hello")
         )
         assert result["ok"] is False
@@ -311,7 +319,7 @@ class TestRunGooseCli:
         monkeypatch.setattr(agent, "GOOSE_EXE", Path(__file__))  # exists
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             agent._run_goose_cli("say hello")
         )
         assert result["ok"] is True
@@ -329,7 +337,7 @@ class TestRunGooseCli:
         monkeypatch.setattr(agent, "GOOSE_EXE", Path(__file__))
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             agent._run_goose_cli("fail task")
         )
         assert result["ok"] is False
@@ -342,14 +350,14 @@ class TestRunGooseCli:
                 async def communicate(self):
                     await asyncio.sleep(999)
                     return b"", b""
-                async def kill(self):
+                def kill(self):
                     pass
             return FakeProc()
 
         monkeypatch.setattr(agent, "GOOSE_EXE", Path(__file__))
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             agent._run_goose_cli("slow task", timeout_sec=0.1)
         )
         assert result["ok"] is False
@@ -367,7 +375,7 @@ class TestRunGooseCli:
         monkeypatch.setattr(agent, "GOOSE_EXE", Path(__file__))
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             agent._run_goose_cli("plain task")
         )
         assert result["ok"] is True
@@ -376,7 +384,7 @@ class TestRunGooseCli:
 
 class TestToolGooseRun:
     def test_missing_task(self):
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             agent._tool_goose_run({}, None)
         )
         assert "Missing" in result
@@ -386,7 +394,7 @@ class TestToolGooseRun:
             return {"ok": True, "response": "Done!", "metadata": {"total_tokens": 10}}
 
         monkeypatch.setattr(agent, "_run_goose_cli", fake_run)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             agent._tool_goose_run({"task": "test"}, None)
         )
         assert "Goose completed" in result
@@ -398,7 +406,7 @@ class TestToolGooseRun:
             return {"ok": False, "error": "connection refused"}
 
         monkeypatch.setattr(agent, "_run_goose_cli", fake_run)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             agent._tool_goose_run({"task": "test"}, None)
         )
         assert "Goose error" in result
@@ -414,7 +422,7 @@ class TestDelegateGoose:
 
         monkeypatch.setattr(agent, "_run_goose_cli", fake_run)
         a = agent.Agent(start_services=False)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             a._delegate("goose", "build a thing")
         )
         assert "Goose result" in result
@@ -427,7 +435,7 @@ class TestDelegateGoose:
 
         monkeypatch.setattr(agent, "_run_goose_cli", fake_run)
         a = agent.Agent(start_services=False)
-        result = asyncio.get_event_loop().run_until_complete(
+        result = _run(
             a._delegate("goose", "do something")
         )
         assert "Goose error" in result
