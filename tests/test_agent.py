@@ -100,6 +100,12 @@ class TestBlockedByMode:
 class TestRAGEngine:
     def setup_method(self):
         self.rag = agent.RAGEngine()
+        # Clear any persistent state for test isolation
+        self.rag.chunks = []
+        self.rag.chunk_ids = set()
+        self.rag._vectorizer = None
+        self.rag._doc_matrix = None
+        self.rag._index_dirty = True
 
     def test_ingest_and_search(self):
         self.rag.ingest("Python is a programming language", "test-doc")
