@@ -43,8 +43,8 @@ CONVERSATIONS_DIR.mkdir(exist_ok=True)
 CONV_INDEX_FILE = CONVERSATIONS_DIR / "_index.json"
 
 # ── Config ─────────────────────────────────────────────────────────────────
-DEFAULT_MODEL = "qwen2.5-coder:7b"
-AVAILABLE_MODELS = ["qwen2.5-coder:7b", "llama3.1:8b", "deepseek-coder:6.7b"]
+DEFAULT_MODEL = "kimi-k2.6:cloud"
+AVAILABLE_MODELS = ["kimi-k2.6:cloud"]
 OLLAMA_BASE = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 GOOSE_REPO_DIR = BASE_DIR / ".external" / "goose"
 MAX_AGENT_CACHE = 4
@@ -363,6 +363,23 @@ async def health_check():
         "agents_cached": len(AGENT_CACHE),
         "conversations": len(list(CONVERSATIONS_DIR.glob("*.json"))),
     }
+
+
+# ── HTTP Chat (for ecosystem bridge) ──────────────────────────────────────
+@app.post("/chat")
+async def http_chat(request: _fastapi.Request):
+    """Simple HTTP chat endpoint for ecosystem bridge compatibility."""
+    body = await request.json()
+    message = body.get("message", "")
+    model = body.get("model", DEFAULT_MODEL)
+    if model == "default":
+        model = DEFAULT_MODEL
+    try:
+        agent = get_runtime_agent(model)
+        response = await agent.chat(message)
+        return {"response": response, "model": model}
+    except Exception as e:
+        return {"response": f"[goose-aios error: {e}]", "model": model}
 
 
 # ── WebSocket Chat ────────────────────────────────────────────────────────

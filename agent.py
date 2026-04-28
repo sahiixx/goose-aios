@@ -1340,7 +1340,7 @@ async def _run_goose_cli(
         "--output-format", "json",
         "--quiet",
         "--provider", "ollama",
-        "--model", "qwen2.5-coder:7b",
+        "--model", "kimi-k2.6:cloud",
         "--max-turns", str(max_turns),
         "-t", task,
     ]
@@ -1800,7 +1800,7 @@ class Agent:
 
     def __init__(
         self,
-        model: str = "qwen2.5-coder:7b",
+        model: str = "kimi-k2.6:cloud",
         role: str = "coordinator",
         delegate_depth: int = 0,
         start_services: bool = True,
