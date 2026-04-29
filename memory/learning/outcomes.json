@@ -82,5 +82,68 @@
     "steps": 0,
     "duration": 9.2,
     "ts": "2026-04-28T09:48:46.549731+00:00"
+  },
+  {
+    "task": "Hello from ecosystem",
+    "outcome": "success",
+    "steps": 0,
+    "duration": 14.2,
+    "ts": "2026-04-29T11:52:52.417746+00:00"
+  },
+  {
+    "task": "hello",
+    "outcome": "failure",
+    "steps": 0,
+    "duration": 0.3,
+    "ts": "2026-04-29T11:55:33.393456+00:00"
+  },
+  {
+    "task": "hello",
+    "outcome": "success",
+    "steps": 0,
+    "duration": 11.4,
+    "ts": "2026-04-29T11:56:04.662377+00:00"
+  },
+  {
+    "task": "hello",
+    "outcome": "success",
+    "steps": 0,
+    "duration": 5.5,
+    "ts": "2026-04-29T11:56:27.152716+00:00"
+  },
+  {
+    "task": "hello",
+    "outcome": "success",
+    "steps": 0,
+    "duration": 2.4,
+    "ts": "2026-04-29T11:57:49.589262+00:00"
+  },
+  {
+    "task": "hello",
+    "outcome": "success",
+    "steps": 0,
+    "duration": 2.8,
+    "ts": "2026-04-29T11:58:59.803026+00:00"
+  },
+  {
+    "task": "hello",
+    "outcome": "success",
+    "steps": 0,
+    "duration": 17.1,
+    "ts": "2026-04-29T12:04:10.131169+00:00"
+  },
+  {
+    "task": "hello ecosystem",
+    "outcome": "success",
+    "steps": 0,
+    "duration": 3.8,
+    "ts": "2026-04-29T12:05:22.224112+00:00"
+  },
+  {
+    "task": "hello",
+    "outcome": "success",
+    "steps": 0,
+    "duration": 9.9,
+    "ts": "2026-04-29T12:09:50.662498+00:00"
   }
 ]
