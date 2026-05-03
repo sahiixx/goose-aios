@@ -2,13 +2,13 @@
   "tool_success": {},
   "tool_failure": {},
   "agent_success": {
-    "goose": 5
+    "goose": 8
   },
   "preferences": {},
   "agent_failure": {
     "researcher": 1,
     "coder": 1,
     "writer": 1,
-    "goose": 5
+    "goose": 12
   }
 }

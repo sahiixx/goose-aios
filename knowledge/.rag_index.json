@@ -5,14 +5,14 @@
       "text": "This is a sufficiently long content block for source A testing",
       "source": "src-a",
       "metadata": {},
-      "ingested_at": "2026-04-26T03:53:36.412745+00:00"
+      "ingested_at": "2026-05-01T09:13:28.442655+00:00"
     },
     {
       "id": "src-b_0_7b9598c0",
       "text": "This is a sufficiently long content block for source B testing",
       "source": "src-b",
       "metadata": {},
-      "ingested_at": "2026-04-26T03:53:36.413108+00:00"
+      "ingested_at": "2026-05-01T09:13:28.443527+00:00"
     }
   ]
 }
