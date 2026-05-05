@@ -1,6 +1,9 @@
-
-.external/
+*.log
+logs/
+memory/episodes/
+memory/learning/*.json
+knowledge/.rag_index.json
 __pycache__/
 *.pyc
+.env
 .venv/
-venv/
