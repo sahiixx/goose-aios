@@ -13,6 +13,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import agent
+import core.config
+import core.tools
+import core.agent
 
 
 def _run(coro):
@@ -77,30 +80,30 @@ class TestDestructiveRegex:
 
 class TestBlockedByMode:
     def test_trusted_local_allows_bash(self):
-        original = agent.SAFETY_MODE
-        agent.SAFETY_MODE = "trusted_local"
+        original = core.config.SAFETY_MODE
+        core.config.SAFETY_MODE = "trusted_local"
         try:
             assert agent._blocked_by_mode("bash") is None
         finally:
-            agent.SAFETY_MODE = original
+            core.config.SAFETY_MODE = original
 
     def test_read_only_blocks_bash(self):
-        original = agent.SAFETY_MODE
-        agent.SAFETY_MODE = "read_only"
+        original = core.config.SAFETY_MODE
+        core.config.SAFETY_MODE = "read_only"
         try:
             result = agent._blocked_by_mode("bash")
             assert result is not None
             assert "read_only" in result
         finally:
-            agent.SAFETY_MODE = original
+            core.config.SAFETY_MODE = original
 
     def test_read_only_allows_read_file(self):
-        original = agent.SAFETY_MODE
-        agent.SAFETY_MODE = "read_only"
+        original = core.config.SAFETY_MODE
+        core.config.SAFETY_MODE = "read_only"
         try:
             assert agent._blocked_by_mode("read_file") is None
         finally:
-            agent.SAFETY_MODE = original
+            core.config.SAFETY_MODE = original
 
 
 # ── RAGEngine ─────────────────────────────────────────────────────────────
@@ -202,15 +205,20 @@ class TestSwarmSubtasks:
 
 class TestMemoryManager:
     def test_working_memory_cap(self):
-        mm = agent.MemoryManager()
+        mm = agent.MemoryManager(
+            episodes_path=Path(tempfile.gettempdir()),
+            memory_file=Path(tempfile.gettempdir()) / "memory.json",
+        )
         for i in range(120):
             mm.add_working("user", f"msg {i}")
         assert len(mm.working) == 100
 
     def test_episode_pruning(self):
         with tempfile.TemporaryDirectory() as tmp:
-            mm = agent.MemoryManager()
-            mm.episodes_path = Path(tmp)
+            mm = agent.MemoryManager(
+                episodes_path=Path(tmp),
+                memory_file=Path(tmp) / "memory.json",
+            )
             for i in range(10):
                 (Path(tmp) / f"ep_{i}.json").write_text(
                     json.dumps({"id": f"ep_{i}", "task": "t", "outcome": "ok"}), "utf-8"
@@ -224,21 +232,21 @@ class TestMemoryManager:
 
 class TestDomainAllowed:
     def test_empty_domains_allows_all(self):
-        original = agent.ALLOWED_WEB_DOMAINS
-        agent.ALLOWED_WEB_DOMAINS = set()
+        original = core.utils.ALLOWED_WEB_DOMAINS
+        core.utils.ALLOWED_WEB_DOMAINS = set()
         try:
             assert agent._domain_allowed("https://example.com") is True
         finally:
-            agent.ALLOWED_WEB_DOMAINS = original
+            core.utils.ALLOWED_WEB_DOMAINS = original
 
     def test_restricted_domain_blocks(self):
-        original = agent.ALLOWED_WEB_DOMAINS
-        agent.ALLOWED_WEB_DOMAINS = {"example.com"}
+        original = core.utils.ALLOWED_WEB_DOMAINS
+        core.utils.ALLOWED_WEB_DOMAINS = {"example.com"}
         try:
             assert agent._domain_allowed("https://evil.com") is False
             assert agent._domain_allowed("https://example.com/page") is True
         finally:
-            agent.ALLOWED_WEB_DOMAINS = original
+            core.utils.ALLOWED_WEB_DOMAINS = original
 
 
 # ── _find_balanced_json_end ──────────────────────────────────────────────
@@ -276,15 +284,15 @@ class TestExecuteTool:
         assert "Unknown tool" in result
 
     def test_blocked_in_read_only(self):
-        original = agent.SAFETY_MODE
-        agent.SAFETY_MODE = "read_only"
+        original = core.config.SAFETY_MODE
+        core.config.SAFETY_MODE = "read_only"
         try:
             result = _run(
                 agent.execute_tool("bash", {"command": "ls"})
             )
             assert "Blocked" in result or "BLOCKED" in result
         finally:
-            agent.SAFETY_MODE = original
+            core.config.SAFETY_MODE = original
 
 
 # ── Goose CLI integration ────────────────────────────────────────────────
@@ -293,9 +301,8 @@ class TestRunGooseCli:
     """Tests for _run_goose_cli and _tool_goose_run."""
 
     def test_goose_not_found(self, monkeypatch):
-        monkeypatch.setattr(agent, "GOOSE_EXE", Path("/nonexistent/goose.exe"))
         result = _run(
-            agent._run_goose_cli("say hello")
+            agent._run_goose_cli("say hello", goose_exe=Path("/nonexistent/goose.exe"))
         )
         assert result["ok"] is False
         assert "not found" in result["error"]
@@ -309,42 +316,40 @@ class TestRunGooseCli:
             "metadata": {"total_tokens": 42},
         })
 
-        async def fake_exec(*cmd, stdout, stderr, cwd):
+        async def fake_exec(*cmd, **kwargs):
             class FakeProc:
                 returncode = 0
                 async def communicate(self):
                     return goose_output.encode(), b""
             return FakeProc()
 
-        monkeypatch.setattr(agent, "GOOSE_EXE", Path(__file__))  # exists
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
         result = _run(
-            agent._run_goose_cli("say hello")
+            agent._run_goose_cli("say hello", goose_exe=Path(__file__))
         )
         assert result["ok"] is True
         assert "Hello from Goose!" in result["response"]
         assert result["metadata"]["total_tokens"] == 42
 
     def test_goose_nonzero_exit(self, monkeypatch):
-        async def fake_exec(*cmd, stdout, stderr, cwd):
+        async def fake_exec(*cmd, **kwargs):
             class FakeProc:
                 returncode = 1
                 async def communicate(self):
                     return b"", b"model not found"
             return FakeProc()
 
-        monkeypatch.setattr(agent, "GOOSE_EXE", Path(__file__))
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
         result = _run(
-            agent._run_goose_cli("fail task")
+            agent._run_goose_cli("fail task", goose_exe=Path(__file__))
         )
         assert result["ok"] is False
         assert "model not found" in result["error"]
 
     def test_goose_timeout(self, monkeypatch):
-        async def fake_exec(*cmd, stdout, stderr, cwd):
+        async def fake_exec(*cmd, **kwargs):
             class FakeProc:
                 returncode = 0
                 async def communicate(self):
@@ -354,29 +359,27 @@ class TestRunGooseCli:
                     pass
             return FakeProc()
 
-        monkeypatch.setattr(agent, "GOOSE_EXE", Path(__file__))
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
         result = _run(
-            agent._run_goose_cli("slow task", timeout_sec=0.1)
+            agent._run_goose_cli("slow task", timeout_sec=0.1, goose_exe=Path(__file__))
         )
         assert result["ok"] is False
         assert "timed out" in result["error"]
 
     def test_goose_raw_text_fallback(self, monkeypatch):
         """When Goose returns non-JSON, fall back to raw text."""
-        async def fake_exec(*cmd, stdout, stderr, cwd):
+        async def fake_exec(*cmd, **kwargs):
             class FakeProc:
                 returncode = 0
                 async def communicate(self):
                     return b"Just plain text output", b""
             return FakeProc()
 
-        monkeypatch.setattr(agent, "GOOSE_EXE", Path(__file__))
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
         result = _run(
-            agent._run_goose_cli("plain task")
+            agent._run_goose_cli("plain task", goose_exe=Path(__file__))
         )
         assert result["ok"] is True
         assert "Just plain text output" in result["response"]
@@ -390,10 +393,10 @@ class TestToolGooseRun:
         assert "Missing" in result
 
     def test_success_formatting(self, monkeypatch):
-        async def fake_run(task, with_builtins="developer", timeout_sec=None, max_turns=None):
+        async def fake_run(task, with_builtins="developer", timeout_sec=None, max_turns=None, goose_exe=None):
             return {"ok": True, "response": "Done!", "metadata": {"total_tokens": 10}}
 
-        monkeypatch.setattr(agent, "_run_goose_cli", fake_run)
+        monkeypatch.setattr(core.tools, "_run_goose_cli", fake_run)
         result = _run(
             agent._tool_goose_run({"task": "test"}, None)
         )
@@ -402,10 +405,10 @@ class TestToolGooseRun:
         assert "Done!" in result
 
     def test_error_formatting(self, monkeypatch):
-        async def fake_run(task, with_builtins="developer", timeout_sec=None, max_turns=None):
+        async def fake_run(task, with_builtins="developer", timeout_sec=None, max_turns=None, goose_exe=None):
             return {"ok": False, "error": "connection refused"}
 
-        monkeypatch.setattr(agent, "_run_goose_cli", fake_run)
+        monkeypatch.setattr(core.tools, "_run_goose_cli", fake_run)
         result = _run(
             agent._tool_goose_run({"task": "test"}, None)
         )
@@ -417,10 +420,10 @@ class TestDelegateGoose:
     """Test that _delegate routes 'goose' to _run_goose_cli."""
 
     def test_delegate_to_goose(self, monkeypatch):
-        async def fake_run(task, with_builtins="developer"):
+        async def fake_run(task, with_builtins="developer", timeout_sec=None, max_turns=None, goose_exe=None):
             return {"ok": True, "response": "Goose did it"}
 
-        monkeypatch.setattr(agent, "_run_goose_cli", fake_run)
+        monkeypatch.setattr(core.agent, "_run_goose_cli", fake_run)
         a = agent.Agent(start_services=False)
         result = _run(
             a._delegate("goose", "build a thing")
@@ -430,10 +433,10 @@ class TestDelegateGoose:
         assert "goose_run" in a.tools_used
 
     def test_delegate_to_goose_error(self, monkeypatch):
-        async def fake_run(task, with_builtins="developer"):
+        async def fake_run(task, with_builtins="developer", timeout_sec=None, max_turns=None, goose_exe=None):
             return {"ok": False, "error": "Goose crashed"}
 
-        monkeypatch.setattr(agent, "_run_goose_cli", fake_run)
+        monkeypatch.setattr(core.agent, "_run_goose_cli", fake_run)
         a = agent.Agent(start_services=False)
         result = _run(
             a._delegate("goose", "do something")

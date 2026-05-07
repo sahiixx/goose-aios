@@ -12,6 +12,7 @@ from core.learning_engine import LearningEngine
 from core.memory import MemoryManager
 from core.parser_utils import find_balanced_json_end
 from core.rag_engine import RAGEngine
+from core.config import GOOSE_EXE
 from core.tools import _run_goose_cli, _tool_goose_run, execute_tool
 from core.utils import _blocked_by_mode, _domain_allowed, _safe_resolve_path
 

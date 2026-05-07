@@ -258,16 +258,18 @@ async def _run_goose_cli(
     with_builtins: str = "developer",
     timeout_sec: int | None = None,
     max_turns: int | None = None,
+    goose_exe: Path | None = None,
 ) -> dict:
     """Run a task through the Goose CLI and return parsed results."""
-    if not GOOSE_EXE.exists():
-        return {"ok": False, "error": f"Goose not found at {GOOSE_EXE}"}
+    exe = goose_exe or GOOSE_EXE
+    if not exe.exists():
+        return {"ok": False, "error": f"Goose not found at {exe}"}
 
     timeout_sec = timeout_sec or GOOSE_TIMEOUT_SEC
     max_turns = max_turns or GOOSE_MAX_TURNS
 
     cmd = [
-        str(GOOSE_EXE), "run",
+        str(exe), "run",
         "--no-session",
         "--output-format", "json",
         "--quiet",
